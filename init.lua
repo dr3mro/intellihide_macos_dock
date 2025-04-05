@@ -1,13 +1,23 @@
--- Dock IntelliHide Spoon for macOS using Hammerspoon
--- Author: Amr Osman
-
 local Spoon = {}
 
 -- === Configuration ===
-local dockHeight = 65 -- Adjust based on your Dock size
 local dockPosition = "bottom" -- "bottom", "left", or "right"
 local windowFilter = hs.window.filter.new() -- Initialize window filter here
 local lastDockState = nil -- Track the last state of the Dock
+
+-- === Automatically Detect Dock Height ===
+local function getDockHeight()
+    -- Use the defaults command to retrieve the Dock size
+    local dockSizeStr = hs.execute("defaults read com.apple.dock tilesize")
+    print("Dock size string: " .. tonumber(dockSizeStr))
+    if not dockSizeStr then
+        return 48 -- Default to medium if we can't detect the size
+    end
+
+    return tonumber(dockSizeStr)
+end
+
+local dockHeight = getDockHeight()
 
 -- === Calculate Dock Rectangle Based on Position ===
 local function getDockRect()

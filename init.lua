@@ -1,8 +1,10 @@
--- Dock IntelliHide for macOS using Hammerspoon
+-- Dock IntelliHide Spoon for macOS using Hammerspoon
 -- Author: Amr Osman
 
+local Spoon = {}
+
 -- === Configuration ===
-local dockHeight = 48 -- Adjust based on your Dock size
+local dockHeight = 65 -- Adjust based on your Dock size
 local dockPosition = "bottom" -- "bottom", "left", or "right"
 local windowFilter = hs.window.filter.new() -- Initialize window filter here
 local lastDockState = nil -- Track the last state of the Dock
@@ -125,7 +127,7 @@ local function trackWorkspaceChanges()
 end
 
 -- === Start IntelliHide Behavior ===
-local function startIntelliHide()
+function Spoon:start()
     local success, err = pcall(function()
         subscribeToWindowEvents()
         trackWorkspaceChanges()
@@ -141,8 +143,8 @@ local function startIntelliHide()
     print("Dock IntelliHide started")
 end
 
--- === Optional: Stop IntelliHide ===
-local function stopIntelliHide()
+-- === Stop IntelliHide ===
+function Spoon:stop()
     if windowFilter then
         windowFilter:unsubscribeAll()
         windowFilter = nil
@@ -154,11 +156,16 @@ end
 local menubar = hs.menubar.new()
 menubar:setTitle("🚢")
 menubar:setMenu({
-    { title = "Start IntelliHide", fn = startIntelliHide },
-    { title = "Stop IntelliHide", fn = stopIntelliHide },
+    { title = "Start IntelliHide", fn = function() Spoon:start() end },
+    { title = "Stop IntelliHide", fn = function() Spoon:stop() end },
     { title = "-" },
     { title = "Quit Hammerspoon", fn = function() hs.application.frontmostApplication():kill() end }
 })
 
 -- === Auto-start IntelliHide ===
-startIntelliHide()
+function Spoon:init()
+    self:start()
+end
+
+-- Return the Spoon object
+return Spoon

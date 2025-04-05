@@ -1,3 +1,6 @@
+-- Dock IntelliHide Spoon for macOS using Hammerspoon
+-- Author: Amr Osman
+
 local Spoon = {}
 
 -- === Configuration ===

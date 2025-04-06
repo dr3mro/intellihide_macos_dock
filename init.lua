@@ -4,55 +4,115 @@
 local Spoon = {}
 
 -- === Configuration ===
-local dockPosition = "bottom" -- "bottom", "left", or "right"
-local windowFilter = hs.window.filter.new() -- Initialize window filter here
-local lastDockState = nil -- Track the last state of the Dock
+local dockPosition = nil -- Will be detected dynamically
+local windowFilter = hs.window.filter.new()
+local lastDockState = nil
+local spaceWatcher = nil
+local dockRect = nil
 
--- === Automatically Detect Dock Height ===
+-- === Detect Dock Position Dynamically ===
+local function detectDockPosition()
+    local pos = hs.execute("defaults read com.apple.dock orientation")
+    return pos and pos:gsub("%s+", "") or "bottom"  -- default to bottom if not found
+end
+
+dockPosition = detectDockPosition()
+
+-- === Get Dock Height ===
 local function getDockHeight()
-    -- Use the defaults command to retrieve the Dock size
     local dockSizeStr = hs.execute("defaults read com.apple.dock tilesize")
-    print("Dock size string: " .. tonumber(dockSizeStr))
-    if not dockSizeStr then
-        return 48 -- Default to medium if we can't detect the size
-    end
-
-    return tonumber(dockSizeStr)
+    local dockSize = tonumber(dockSizeStr and dockSizeStr:gsub("%s+", "") or "48")
+    print("Detected Dock size: " .. dockSize)
+    return dockSize
 end
 
-local dockHeight = getDockHeight()
-
--- === Calculate Dock Rectangle Based on Position ===
+-- === Calculate Dock Rectangle Dynamically ===
 local function getDockRect()
-    local screen = hs.screen.mainScreen()
-    local frame = screen:frame()
+    local dockApp = hs.application("Dock")
+    if not dockApp then
+        print("Dock application not found.")
+        return hs.geometry.rect(0, 0, 0, 0)
+    end
 
-    if dockPosition == "bottom" then
-        return hs.geometry.rect(0, frame.h - dockHeight, frame.w, dockHeight)
-    elseif dockPosition == "left" then
-        return hs.geometry.rect(0, 0, dockHeight, frame.h)
-    elseif dockPosition == "right" then
-        return hs.geometry.rect(frame.w - dockHeight, 0, dockHeight, frame.h)
+    local axApp = hs.axuielement.applicationElement(dockApp)
+    local children = axApp.AXChildren
+    if not children then
+        print("No AX children found for Dock.")
+        return hs.geometry.rect(0, 0, 0, 0)
+    end
+
+    for _, child in ipairs(children) do
+        local frame = child.AXFrame
+        if frame and frame.w > 0 and frame.h > 0 then
+            return hs.geometry.rect(frame.x, frame.y, frame.w, frame.h)
+        end
+    end
+
+    -- fallback approximation if Dock frame not found
+    local screen = hs.screen.mainScreen():frame()
+    local height = getDockHeight()
+    local orientation = detectDockPosition()
+
+    if orientation == "bottom" then
+        return hs.geometry.rect(0, screen.h - height, screen.w, height)
+    elseif orientation == "left" then
+        return hs.geometry.rect(0, 0, height, screen.h)
+    elseif orientation == "right" then
+        return hs.geometry.rect(screen.w - height, 0, height, screen.h)
+    else
+        return hs.geometry.rect(0, 0, 0, 0)
     end
 end
 
-local dockRect = getDockRect()
+-- === Detect Dock Autohide State ===
+local function isDockHidden()
+    local dockState = hs.execute("defaults read com.apple.dock autohide")
+    print("Detected Dock autohide state: " .. dockState)
+    return dockState and dockState:gsub("%s+", "") == "1" or false
+end
 
--- Function to check if the window is maximized
+-- === Set Dock Visibility ===
+local function hideDock(isHidden)
+    if isHidden == isDockHidden() then return end
+    local hidden = isHidden and "true" or "false"
+    hs.execute("defaults write com.apple.dock autohide -bool " .. hidden)
+    hs.eventtap.event.newKeyEvent({ "cmd", "option" }, "D", true):post()
+    hs.eventtap.event.newKeyEvent({ "cmd", "option" }, "D", false):post()
+    print("Dock visibility set to: " .. (isHidden and "hidden" or "visible"))
+end
+
+-- === Check Window States ===
 local function isWindowMaximized(window)
-    local windowFrame = window:frame()
-    local screenFrame = hs.screen.mainScreen():frame()
+    local winFrame = window:frame()
+    local screen = window:screen()
+    local frame = screen:frame()
+    local fullFrame = screen:fullFrame()
+    local tolerance = 4
 
-    return windowFrame.w == screenFrame.w and windowFrame.h == screenFrame.h and windowFrame.x == 0 and windowFrame.y == 0
+    local isMaxFrame = math.abs(winFrame.x - fullFrame.x) <= tolerance
+        and math.abs(winFrame.y - fullFrame.y) <= tolerance
+        and math.abs(winFrame.w - fullFrame.w) <= tolerance
+        and math.abs(winFrame.h - fullFrame.h) <= tolerance
+
+    local isFrameFrame = math.abs(winFrame.x - frame.x) <= tolerance
+        and math.abs(winFrame.y - frame.y) <= tolerance
+        and math.abs(winFrame.w - frame.w) <= tolerance
+        and math.abs(winFrame.h - frame.h) <= tolerance
+
+    return isMaxFrame or isFrameFrame
 end
 
--- Function to check if the frontmost window is overlapping the Dock area
+-- === Improved Overlap Check for Dock ===
 local function isWindowOverlappingDock(window)
-    local windowFrame = window:frame()
-    return windowFrame:intersect(dockRect).area > 0
+    local winFrame = window:frame()
+
+    -- Check if window is overlapping the dock based on its position and size
+    local intersect = winFrame:intersect(dockRect)
+
+    -- If the intersection area is greater than zero, there's an overlap
+    return intersect.area > 0
 end
 
--- Function to check if the frontmost window is maximized or overlapping with the Dock
 local function ifTopWindowIsOverlappingOrMaximized()
     local window = hs.window.frontmostWindow()
     if window then
@@ -63,24 +123,6 @@ local function ifTopWindowIsOverlappingOrMaximized()
     end
 end
 
--- === Detect Current Dock Visibility ===
-local function isDockHidden()
-    local dockState = hs.execute("defaults read com.apple.dock autohide")
-    return (dockState:match("1") ~= nil)
-end
-
--- === Set Dock Visibility ===
-local function hideDock(isHidden)
-    if isHidden == lastDockState then return end  -- Avoid unnecessary state changes
-    local hidden = isHidden and "true" or "false"
-    hs.execute("defaults write com.apple.dock autohide -bool " .. hidden)
-    hs.eventtap.event.newKeyEvent({ "cmd", "option" }, "D", true):post()
-    hs.eventtap.event.newKeyEvent({ "cmd", "option" }, "D", false):post()
-    lastDockState = isHidden
-    print("Dock visibility set to: " .. (isHidden and "hidden" or "visible"))
-end
-
--- === Check if Any Windows are Visible ===
 local function areAnyWindowsVisible()
     for _, win in ipairs(hs.window.allWindows()) do
         if win:isVisible() and not win:isMinimized() and win:frame().w > 0 and win:frame().h > 0 then
@@ -90,21 +132,27 @@ local function areAnyWindowsVisible()
     return false
 end
 
--- === Trigger Update Based on Window Overlap or Visibility ===
+-- === Update Dock Visibility Based on State ===
 local function updateDock()
-    -- If no windows are visible, show the Dock
-    if not areAnyWindowsVisible() then
-        if isDockHidden() then
-            hideDock(false) -- Show the Dock if no windows are visible
-        end
-    elseif ifTopWindowIsOverlappingOrMaximized() and not isDockHidden() then
-        hideDock(true) -- Hide the Dock if window is overlapping or maximized
-    elseif not ifTopWindowIsOverlappingOrMaximized() and isDockHidden() then
-        hideDock(false) -- Show the Dock if window is not overlapping or maximized
+    local hasVisibleWindows = areAnyWindowsVisible()
+    local topWindowIsCoveringDock = ifTopWindowIsOverlappingOrMaximized()
+    
+    if not hasVisibleWindows then
+        -- No windows: always show the Dock
+        hideDock(false)
+        print("No visible windows — showing Dock.")   
+    elseif topWindowIsCoveringDock then
+        -- Hide the Dock if something overlaps or is fullscreen
+        hideDock(true)
+        print("Top window overlaps or is maximized — hiding Dock.")
+    else
+        -- Window exists but not overlapping Dock
+        hideDock(false)
+        print("Visible windows but Dock not overlapped — showing Dock.")
     end
 end
 
--- === Track Window State (Moved, Created, Destroyed) ===
+-- === Window Event Tracking ===
 local function trackWindowState(window)
     local frame = window:frame()
     if frame.w == hs.screen.mainScreen():frame().w and frame.h == hs.screen.mainScreen():frame().h then
@@ -116,7 +164,6 @@ local function trackWindowState(window)
     end
 end
 
--- === Subscribe to Window Events ===
 local function subscribeToWindowEvents()
     windowFilter:subscribe({
         "windowCreated",
@@ -127,25 +174,27 @@ local function subscribeToWindowEvents()
     }, function(window, appName, event)
         print("Detected window event: " .. event)
         trackWindowState(window)
-        hs.timer.doAfter(0.1, updateDock)  -- Delay for proper event processing
+        hs.timer.doAfter(0.1, updateDock)
     end)
 end
 
--- === Track Workspace Changes ===
+-- === Workspace Change Tracking ===
 local function trackWorkspaceChanges()
-    hs.spaces.watcher.new(function()
+    spaceWatcher = hs.spaces.watcher.new(function()
         print("Workspace changed.")
-        hs.timer.doAfter(0.1, updateDock)  -- Ensure that we update the Dock after workspace change
-    end):start()
+        hs.timer.doAfter(0.1, updateDock)
+    end)
+    spaceWatcher:start()
 end
 
--- === Start IntelliHide Behavior ===
+-- === Start/Stop IntelliHide ===
 function Spoon:start()
+    dockRect = getDockRect()
+
     local success, err = pcall(function()
         subscribeToWindowEvents()
         trackWorkspaceChanges()
     end)
-
     if not success then
         print("Error subscribing to window events: " .. err)
     else
@@ -156,16 +205,20 @@ function Spoon:start()
     print("Dock IntelliHide started")
 end
 
--- === Stop IntelliHide ===
 function Spoon:stop()
     if windowFilter then
         windowFilter:unsubscribeAll()
         windowFilter = nil
     end
+    if spaceWatcher then
+        spaceWatcher:stop()
+        spaceWatcher = nil
+    end
+
     print("Dock IntelliHide stopped")
 end
 
--- === Optional: Menubar Control ===
+-- === Menubar Control ===
 local menubar = hs.menubar.new()
 menubar:setTitle("🚢")
 menubar:setMenu({
@@ -180,5 +233,4 @@ function Spoon:init()
     self:start()
 end
 
--- Return the Spoon object
 return Spoon
